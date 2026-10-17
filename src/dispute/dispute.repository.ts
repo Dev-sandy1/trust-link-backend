@@ -34,4 +34,31 @@ export class DisputeRepository {
       .findFirst({ where: { escrowId } })
       .then((row) => (row ? toDisputeRecord(row) : null));
   }
+
+  findMany(params: {
+    where?: any;
+    orderBy?: any;
+    skip?: number;
+    take?: number;
+  }): Promise<DisputeRecord[]> {
+    return this.prisma.dispute
+      .findMany(params)
+      .then((rows) => rows.map(toDisputeRecord));
+  }
+
+  count(where?: any): Promise<number> {
+    return this.prisma.dispute.count({ where });
+  }
+
+  findFirst(params: { where?: any }): Promise<DisputeRecord | null> {
+    return this.prisma.dispute
+      .findFirst(params)
+      .then((row) => (row ? toDisputeRecord(row) : null));
+  }
+
+  update(params: { where: any; data: any }): Promise<DisputeRecord> {
+    return this.prisma.dispute
+      .update(params)
+      .then((row) => toDisputeRecord(row));
+  }
 }

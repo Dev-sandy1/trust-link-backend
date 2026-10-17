@@ -7,20 +7,21 @@ import {
   DisputeRecord,
   DisputeState,
   EscrowRecord,
-  PrismaService,
-  toDisputeRecord,
 } from '../../prisma/prisma.service';
 import { EscrowRepository } from '../../escrow/escrow.repository';
+import { DisputeRepository } from '../../dispute/dispute.repository';
 import { ContractService } from '../../stellar/contract.service';
 import { ConfigService } from '../../config/config.service';
+import { NotificationsService } from '../../notifications/notifications.service';
 
 @Injectable()
 export class DisputeService {
   constructor(
     private readonly escrowRepository: EscrowRepository,
     private readonly contractService: ContractService,
-    private readonly prisma: PrismaService,
+    private readonly disputeRepository: DisputeRepository,
     private readonly configService: ConfigService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   /**
@@ -60,15 +61,15 @@ export class DisputeService {
       : undefined;
 
     const [data, total] = await Promise.all([
-      this.prisma.dispute.findMany({
+      this.disputeRepository.findMany({
         where,
         orderBy: { createdAt: 'desc' },
         skip,
         take: limit,
       }),
-      this.prisma.dispute.count({ where }),
+      this.disputeRepository.count(where),
     ]);
-    return { data: data.map(toDisputeRecord), total, page, limit };
+    return { data, total, page, limit };
   }
 
   /** Resolves a dispute by submitting the contract action and finalizing escrow state. */
@@ -82,6 +83,10 @@ export class DisputeService {
     }
 
     if (escrow.state === 'COMPLETED' || escrow.state === 'REFUNDED') {
+      throw new ConflictException('Dispute has already been resolved');
+    }
+
+    if (escrow.state !== 'DISPUTED') {
       throw new ConflictException('Dispute has already been resolved');
     }
 
@@ -100,19 +105,35 @@ export class DisputeService {
       this.requireAdminAddress(),
     );
 
-    const dispute = await this.prisma.dispute.findFirst({
-      where: { escrowId, status: 'OPEN' },
+    const dispute = await this.disputeRepository.findFirst({
+      where: {
+        escrowId,
+        status: { in: ['OPEN', 'UNDER_REVIEW'] as DisputeState[] },
+      },
     });
     if (dispute) {
-      await this.prisma.dispute.update({
+      await this.disputeRepository.update({
         where: { id: dispute.id },
         data: { status: 'RESOLVED', resolvedAt: new Date() },
       });
     }
 
+    let result: EscrowRecord;
     if (resolution === 'RELEASE') {
-      return this.escrowRepository.markCompleted(escrowId);
+      result = await this.escrowRepository.markCompleted(escrowId);
+      try {
+        await this.notificationsService.notifyCompleted(result);
+      } catch (e) {
+        // Notification failures should not fail the request
+      }
+    } else {
+      result = await this.escrowRepository.markRefunded(escrowId);
+      try {
+        await this.notificationsService.notifyRefunded(result);
+      } catch (e) {
+        // Notification failures should not fail the request
+      }
     }
-    return this.escrowRepository.markRefunded(escrowId);
+    return result;
   }
 }
