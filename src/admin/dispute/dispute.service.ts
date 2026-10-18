@@ -1,6 +1,7 @@
 import {
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import {
@@ -16,6 +17,8 @@ import { NotificationsService } from '../../notifications/notifications.service'
 
 @Injectable()
 export class DisputeService {
+  private readonly logger = new Logger(DisputeService.name);
+
   constructor(
     private readonly escrowRepository: EscrowRepository,
     private readonly contractService: ContractService,
@@ -87,7 +90,7 @@ export class DisputeService {
     }
 
     if (escrow.state !== 'DISPUTED') {
-      throw new ConflictException('Dispute has already been resolved');
+      throw new ConflictException('Escrow is not currently disputed');
     }
 
     // `resolve_dispute(env, caller: Address, escrow_id: u64, resolution)`
@@ -121,19 +124,31 @@ export class DisputeService {
     let result: EscrowRecord;
     if (resolution === 'RELEASE') {
       result = await this.escrowRepository.markCompleted(escrowId);
-      try {
-        await this.notificationsService.notifyCompleted(result);
-      } catch (e) {
-        // Notification failures should not fail the request
-      }
+      await this.notifySafely('notifyCompleted', () =>
+        this.notificationsService.notifyCompleted(result),
+      );
     } else {
       result = await this.escrowRepository.markRefunded(escrowId);
-      try {
-        await this.notificationsService.notifyRefunded(result);
-      } catch (e) {
-        // Notification failures should not fail the request
-      }
+      await this.notifySafely('notifyRefunded', () =>
+        this.notificationsService.notifyRefunded(result),
+      );
     }
     return result;
+  }
+
+  /**
+   * The escrow state is already written by the time the notifier runs, so a
+   * delivery failure must not roll the request back — it is logged and the
+   * resolve still succeeds.
+   */
+  private async notifySafely(
+    label: string,
+    send: () => Promise<void>,
+  ): Promise<void> {
+    try {
+      await send();
+    } catch (error) {
+      this.logger.error(`${label} failed for resolved dispute`, error);
+    }
   }
 }
